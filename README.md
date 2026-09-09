@@ -7,8 +7,11 @@ webserver override:
 > **Tested with [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) `v0.1.5-alpha.1`** — this plugin is verified runnable against that harness version.
 
 - **On** — the web GUI binds `0.0.0.0`, so other machines on the same network
-  can open it at `http://<LAN-IP>:3080`. The /api trust fence is updated live,
-  so the browser on a LAN machine works fully (chat, tools, workspace).
+  can open it at `http://<LAN-IP>:3080/?token=…`. `dsh web` prints the full
+  URL (with the per-process `?token=` launch token) for the LAN address when
+  it starts — a fresh LAN browser needs that token in the URL to authenticate.
+  The /api trust fence is updated live, so the browser on a LAN machine works
+  fully (chat, tools, workspace).
 - **Off** — the GUI binds `127.0.0.1` again (loopback only — the safe default).
 
 ## Screenshots
@@ -74,6 +77,12 @@ fence all ship inside the plugin.
    - Enabling shows the ONE address other devices can open — the IPv4 of the
      interface that owns the default route (`http://192.168.x.x:3080`) —
      with a copy button.
+   - That address must include the browser-session `?token=…` when opened
+     from another machine. `dsh web` prints the full URL (with the token)
+     for both the loopback and the LAN address on startup — copy the LAN one,
+     e.g. `http://192.168.0.101:3080/?token=ICKD2317KYP…`. The token is a
+     per-process launch token that exchanges for a session cookie; a fresh LAN
+     browser cannot authenticate without it.
    - The web server restarts to rebind; the row waits for it and re-reads the
      state (a network error mid-restart is not reported as failure).
    - The plugin also installs a `crypto.randomUUID` polyfill on plain-HTTP
