@@ -26,7 +26,7 @@ import { execFile } from 'node:child_process'
 import { networkInterfaces } from 'node:os'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import {
-  SettingsConflictError, settingsNamespace, type SettingsScope,
+  SettingsConflictError, type SettingsScope,
 } from '@deepseek-ai/dsh-settings'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import z from '@deepseek-ai/schemastery'
@@ -467,16 +467,10 @@ async function settingsWriteRpc(
   if (!exposedSettingsNamespaces(ctx).has(ns)) {
     return rpcErr(rpcId, 'settings-not-exposed', `settings namespace "${ns}" is not exposed to configuration clients`)
   }
-  let branded: ReturnType<typeof settingsNamespace>
   try {
-    branded = settingsNamespace(ns)
-  } catch (error: unknown) {
-    return rpcErr(rpcId, 'settings-rejected', error instanceof Error ? error.message : String(error))
-  }
-  try {
-    if (mode === 'update') await settings.update(branded, section as object, expectedRevision)
-    else if (mode === 'replace') await settings.replace(branded, section as object, expectedRevision)
-    else await settings.mutate(branded, section as readonly unknown[], expectedRevision)
+    if (mode === 'update') await settings.update(ns, section as object, expectedRevision)
+    else if (mode === 'replace') await settings.replace(ns, section as object, expectedRevision)
+    else await settings.mutate(ns, section as readonly unknown[], expectedRevision)
   } catch (error: unknown) {
     if (error instanceof SettingsConflictError) {
       return rpcErr(rpcId, 'settings-conflict', error.message, {
@@ -718,8 +712,7 @@ export function apply(ctx: Context): void {
   // align at boot. This child fiber depends on the settings seam only, so a
   // webserver restart never tears it down.
   ctx.inject(['settings'], (sctx) => {
-    const ns = settingsNamespace(LAN_ACCESS_NAMESPACE)
-    scope = sctx.settings.register<LanAccessSettings>(ns, LanAccessSchema)
+    scope = sctx.settings.register<typeof LAN_ACCESS_NAMESPACE, LanAccessSettings>(LAN_ACCESS_NAMESPACE, LanAccessSchema)
     scope.watch((next) => {
       void enqueueApply(next.enabled).catch(error => warn('settings change', error))
     })
@@ -819,7 +812,7 @@ export function apply(ctx: Context): void {
       }
       // Persist first (the commit fires the watch → enqueueApply), then make
       // sure the bind follows even if the watch raced this request.
-      await settings.update(settingsNamespace(LAN_ACCESS_NAMESPACE), { enabled })
+      await settings.update(LAN_ACCESS_NAMESPACE, { enabled })
       await enqueueApply(enabled)
       writeJson(res, 200, { ok: true, value: await stateOf() })
       return

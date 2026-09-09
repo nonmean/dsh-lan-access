@@ -4,7 +4,7 @@ A DeepSeek Harness web plugin that adds a **LAN access** toggle to the DSH
 Settings shell (Settings → General). It replaces the manual `cordis.patch.yml`
 webserver override:
 
-> **Tested with [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) `v0.1.1-rc.1`** — this plugin is verified runnable against that harness version.
+> **Tested with [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) `v0.1.5-alpha.1`** — this plugin is verified runnable against that harness version.
 
 - **On** — the web GUI binds `0.0.0.0`, so other machines on the same network
   can open it at `http://<LAN-IP>:3080`. The /api trust fence is updated live,
@@ -92,26 +92,44 @@ fence all ship inside the plugin.
 Everything the plugin serves works from a LAN browser with **zero
 modification of the DSH checkout**:
 
-- **The /api gateway pins the configuration plane (`settings.*`,
-  `credentials.*`) to loopback.** The plugin mirrors those domains on its
-  own fenced route (`/lan-access/rpc`) — same exposure boundary (model
-  providers + web/product namespaces), redacted values, revision-fenced
-  writes, same error codes — and the browser bundle routes the shared
-  `api.settings.*` / `api.credentials.*` calls through it. The Models page
-  provider directory, the Plugins configuration cards, and the
-  Language/Appearance rows therefore work remotely.
+- **The current `/api` gateway trusts the served LAN authority**, so the
+  configuration plane (`settings.*`, `credentials.*`) reaches the host
+  directly — the Host/Origin fence admits the LAN host and the ordinary
+  browser-session auth authenticates it. The Models page provider directory,
+  the Plugins configuration cards, and the Language/Appearance rows therefore
+  work remotely with no extra hop.
 - **The client `settingsScope` degrades to memory mode on non-loopback
   origins** (surfaces render empty). The browser bundle widens
   `connection.isLoopback` to "loopback OR served LAN authority" at runtime.
-  The client entry is inject-less and marked `dsh.client.immediately`, so
-  its bundle is prefetched and its apply runs in the first boot wave — before
-  any settings surface bundle finishes fetching — guaranteeing the patch is
-  in place before the Plugins cards, Models page, and preference rows bind
-  their scopes. (Without that ordering, a surface that binds early sees the
-  unpatched `isLoopback` and its scope stays memory-mode: the plugin
-  configuration cards render nothing.)
+  The client entry injects `connection` and is marked
+  `dsh.client.immediately`, so its bundle is prefetched and its `apply`
+  runs right after the connection row provides the handle — before any
+  settings surface (which waits on `remote` / `settingsScope`) reads
+  `remote.$host.isLoopback`. That `inject`-ordered widening is what keeps
+  the scope in host mode on a LAN page: without it, a surface that binds early
+  sees the unpatched `isLoopback` and its scope stays memory-mode — the
+  plugin configuration cards render nothing.
 - **`crypto.randomUUID` does not exist on plain-HTTP LAN origins.** The
   bundle installs a `getRandomValues`-based polyfill (same CSPRNG).
+
+### Harness API changes this plugin tracks
+
+The harness evolved the settings/connection APIs between `0.1.0-rc.5` and
+`0.1.5-alpha.1`; the plugin was updated accordingly:
+
+- `@deepseek-ai/dsh-settings` dropped the `settingsNamespace(ns)` helper —
+  `settings.register` / `.update` / `.replace` / `.mutate` now take the raw
+  namespace string (validated at runtime and by a compile-time guard).
+- The client `ConnectionHandle` no longer carries an `api` member — remote
+  methods go through `connection.rpc.call('/api', '<ns>/<method>', …)` — so
+  the plugin no longer patches `connection.api.settings.*` /
+  `connection.api.credentials.*`.
+- The `/api` gateway stopped pinning the configuration plane to loopback: it
+  now trusts the served LAN authority, so the settings/credentials RPCs reach
+  the host directly. The plugin therefore widens `connection.isLoopback` early
+  (via `inject: ['connection']` plus a synchronous patch) to keep
+  `settingsScope` in host mode on a LAN page; the fenced `/lan-access/rpc`
+  proxy is no longer required for the remote Settings surfaces.
 
 Remaining loopback-only (hardcoded in the harness, not patchable from a
 plugin): `host.pickDirectory` / `host.openPath` (native dialogs and host
@@ -124,7 +142,7 @@ opens route into the sidebar editor.
 The host exposes `GET /lan-access/diag` (fenced like the other routes) with
 the latest browser boot reports: slot-registration counts, whether the
 connection patch is active, and a `settingsScope` probe bound to the
-`shell` namespace (status `ready` proves the host-mode + proxy path works
+`shell` namespace (status `ready` proves the host-mode settings read works
 end to end). During the first minute after boot the browser also posts a
 2-second poll of the Plugins cards' own injected snapshots (`available`
 flags), the slot ledger view, and the declared spec — the exact data that

@@ -51,15 +51,15 @@ declare module '@deepseek-ai/cordis' {
 installRandomUUIDPolyfill()
 
 /**
- * Services required before mounting: NONE — an inject-less row starts in the
- * first boot wave, so this plugin's apply runs before the settings surfaces
- * (which wait on `remote` / `settingsScope`) bind their scopes. The
- * connection handle is read lazily via `ctx.get` (it exists by then: the
- * connection row is inject-less too and precedes this row in the tree). The
- * settings row itself is mounted from a child fiber once slots + locale
- * exist.
+ * Services required before mounting: only the connection, so this plugin's
+ * apply runs after the connection row provides its handle but still before
+ * the settings surfaces (which wait on `remote` / `settingsScope`). That
+ * ordering is what lets the isLoopback widening below land before ui-settings
+ * reads `remote.$host.isLoopback` for the settingsScope persistence decision
+ * — a non-loopback page would otherwise degrade settings to memory mode, and
+ * the Models page / Plugins cards would render nothing.
  */
-export const inject: string[] = []
+export const inject: string[] = ['connection']
 
 /**
  * Client plugin body.
@@ -68,26 +68,17 @@ export const inject: string[] = []
 export function apply(ctx: Context): void {
   // Defensive re-install (module scope already ran; tests may mount directly).
   installRandomUUIDPolyfill()
-  // The connection patch: served-authority classification + settings/
-  // credentials RPC routing. This fiber is inject-less and marked
-  // immediately in package.json, so it starts in the first boot wave, before
-  // any settings surface fetches; the effect still waits for the connection
-  // service defensively (entry creation is concurrent, so the connection row
-  // is not guaranteed to have applied yet at this fiber's start). Disposed
-  // with this fiber (HMR-safe).
-  ctx.effect(async function* () {
-    let connection: LanAccessConnectionHandle | undefined
-    for (let attempt = 0; attempt < 600 && connection === undefined; attempt += 1) {
-      try {
-        connection = ctx.get('connection') as LanAccessConnectionHandle | undefined
-      } catch {
-        // The connection row has not provided the service yet; retry shortly.
-      }
-      if (connection === undefined) await new Promise((resolve) => setTimeout(resolve, 25))
-    }
-    if (connection === undefined) return
-    yield installConnectionPatch(connection)
-  }, 'dsh-lan-access: connection patch')
+  // The connection patch: served-authority classification. The connection is
+  // injected (see `inject` above), and `ctx.effect` runs its body
+  // synchronously during apply — so the widening lands before any settings
+  // surface finishes fetching — instead of from a deferred async-generator
+  // effect that could land after ui-settings has already read
+  // `remote.$host.isLoopback` and committed to memory-mode persistence. The
+  // returned disposer is collected for HMR-safe teardown.
+  ctx.effect(
+    () => installConnectionPatch(ctx.get('connection') as LanAccessConnectionHandle),
+    'dsh-lan-access: connection patch',
+  )
 
   // The settings row + dictionaries need slots/locale, which arrive later;
   // mount them in a child fiber that waits for those services.
