@@ -2,13 +2,14 @@
  * dsh-lan-access host half: owns the web GUI's bind host.
  *
  * The webserver row binds loopback by default. This plugin owns a persisted
- * `lan-access` settings namespace (`enabled: true` = bind all interfaces)
- * and converges the running webserver to it:
+ * `lan-access` flag (`enabled: true` = bind all interfaces) in its own
+ * `$DSH_HOME/lan-access.json` and converges the running webserver to it:
  *
- * - at boot, after both the settings seam and the webserver exist, the
- *   persisted value is applied once (a mismatch restarts the webserver row);
- * - every settings commit re-applies it, so the General-settings toggle takes
- *   effect immediately;
+ * - at boot, once the webserver exists, the persisted value is applied once
+ *   (a mismatch restarts the webserver fiber);
+ * - a toggle writes the flag, then restarts the webserver fiber directly
+ *   (`fiber.update(config, noSave)`), so the General-settings switch takes
+ *   effect immediately without a profile-config reload;
  * - a fenced /lan-access JSON route (GET state, POST set) lets the browser
  *   settings row read and flip the switch. The fence accepts loopback or the
  *   deployment's trusted authorities, read live from the connection row so
@@ -21,32 +22,63 @@
  *
  * The webserver is read lazily (`ctx.get`) and never injected, so this
  * plugin's own fiber survives the webserver restart it triggers.
+ *
+ * The flag is plugin-owned on purpose: a harness `settings` write reconciles
+ * the whole profile inside an HMR transaction, and restarting the webserver
+ * from that transaction would bake its async context into the new server.
  */
+import { AsyncResource } from 'node:async_hooks'
 import { execFile } from 'node:child_process'
-import { networkInterfaces } from 'node:os'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { homedir, networkInterfaces } from 'node:os'
+import { dirname, join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import {
-  SettingsConflictError, type SettingsScope,
-} from '@deepseek-ai/dsh-settings'
+import { SettingsConflictError } from '@deepseek-ai/dsh-settings'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
-import z from '@deepseek-ai/schemastery'
 import type { Context } from '@deepseek-ai/cordis'
 
 /** Bind host values the webserver schema accepts. */
 export type LanAccessHost = '127.0.0.1' | '0.0.0.0'
 
-/** The persisted section: whether the GUI listens on all interfaces. */
-export interface LanAccessSettings {
+/** File name of the plugin-owned persisted state under the harness home. */
+export const LAN_ACCESS_STATE_FILE = 'lan-access.json'
+
+/** The plugin's persisted state (owned by the plugin, not the settings plane). */
+export interface LanAccessPersistedState {
+  /** Whether the webserver should bind all interfaces (0.0.0.0). */
   enabled: boolean
 }
 
-/** Settings namespace owned by this plugin. */
-export const LAN_ACCESS_NAMESPACE = 'lan-access'
+/**
+ * Absolute path of the plugin's state file. Prefers the harness-provided
+ * `dshHomePath` helper (present under the web boot) and falls back to
+ * `$DSH_HOME` / `~/.dsh` for bare compositions and tests.
+ */
+function lanAccessStatePath(ctx: Context): string {
+  const dshHomePath = ctx.get('dshHomePath') as ((...segments: string[]) => string) | undefined
+  if (typeof dshHomePath === 'function') return dshHomePath(LAN_ACCESS_STATE_FILE)
+  const home = typeof process.env.DSH_HOME === 'string' && process.env.DSH_HOME.trim() !== ''
+    ? process.env.DSH_HOME
+    : join(homedir(), '.dsh')
+  return join(home, LAN_ACCESS_STATE_FILE)
+}
 
-/** Durable section schema (defaults to loopback — the safe state). */
-export const LanAccessSchema: z<LanAccessSettings> = z.object({
-  enabled: z.boolean().default(false),
-})
+/** Read the persisted flag; a missing or unreadable file means loopback (the safe default). */
+function readPersistedEnabled(ctx: Context): boolean {
+  try {
+    const raw = JSON.parse(readFileSync(lanAccessStatePath(ctx), 'utf8')) as { enabled?: unknown }
+    return raw.enabled === true
+  } catch {
+    return false
+  }
+}
+
+/** Persist the flag (single-key document under the harness home). */
+function persistEnabled(ctx: Context, enabled: boolean): void {
+  const path = lanAccessStatePath(ctx)
+  mkdirSync(dirname(path), { recursive: true })
+  writeFileSync(path, JSON.stringify({ enabled }, null, 2) + '\n', 'utf8')
+}
 
 /** One webserver service slice this plugin reads. */
 export interface LanAccessWebServer {
@@ -65,7 +97,11 @@ export interface LanAccessLoaderEntry {
   id: string
   options: { name: string; config?: unknown }
   /** The entry's live fiber; its config is the post-interpolation resolved value. */
-  fiber?: { config?: unknown }
+  fiber?: {
+    config?: unknown
+    /** Restart this fiber with new config; `noSave` suppresses a tree write-back. */
+    update?(config: unknown, noSave?: boolean): void
+  }
 }
 
 /** The loader service face (structural subset of the cordis-plugin-loader tree). */
@@ -280,7 +316,7 @@ function isTrustedApiRequest(req: IncomingMessage, trustedHosts: readonly string
 
 /** Wire state of the LAN-access feature. */
 export interface LanAccessState {
-  /** Whether the settings seam and webserver are both up (false while booting). */
+  /** Whether the webserver is up (false while booting). */
   ready: boolean
   /** The persisted enabled flag. */
   enabled: boolean
@@ -618,17 +654,23 @@ async function handleRpc(
  */
 export function apply(ctx: Context): void {
   const loader = ctx.loader
+  // The persisted flag, owned by the plugin (see `persistEnabled`). Read once
+  // at mount; the `/lan-access` POST advances it.
+  let currentEnabled = readPersistedEnabled(ctx)
   // The live bind-host source for the webserver row's `host` expression
   // (`!!js ctx.get('lanAccess')?.host ?? '127.0.0.1'`, composed by this
   // plugin's bundle patch). Provided by this fiber, which depends only on the
   // loader, so it survives every webserver restart.
+  //
+  // It is a stable snapshot advanced only by `enqueueApply`: a profile-config
+  // reload must recompose the SAME host so the webserver is never restarted
+  // inside an HMR transaction (which would bake that transaction's async
+  // context into the new server and make every later settings write nest).
   ctx.provide('lanAccess', {
     get host(): LanAccessHost {
-      return scope?.get().enabled === true ? '0.0.0.0' : '127.0.0.1'
+      return currentEnabled ? '0.0.0.0' : '127.0.0.1'
     },
   } satisfies LanAccessBindService)
-  // The owner scope, once the settings child fiber registers the namespace.
-  let scope: SettingsScope<LanAccessSettings> | undefined
   // Client boot diagnostics (the last few browser reports; debug aid).
   const diagReports: Array<{ at: number; data: unknown }> = []
   // RPC traffic log (the last 60 proxied calls; debug aid).
@@ -641,6 +683,12 @@ export function apply(ctx: Context): void {
   // fulfilled so one failure cannot strand later writes.
   let applying: Promise<void> = Promise.resolve()
   let pendingCount = 0
+  // A clean async context captured at mount. A settings write runs the profile
+  // reload inside an HMR transaction; a webserver restarted from within that
+  // transaction inherits its context, and every later settings write would
+  // then be rejected as nested. Running the bind convergence in this scope
+  // keeps the restarted webserver on a clean context.
+  const applyScope = new AsyncResource('dsh-lan-access:apply')
 
   const serverOf = (): LanAccessWebServer | undefined =>
     ctx.get('webServer') as LanAccessWebServer | undefined
@@ -660,25 +708,34 @@ export function apply(ctx: Context): void {
   /** Queue one bind convergence; no-ops when the webserver already binds the desired host. */
   const enqueueApply = (enabled: boolean): Promise<void> => {
     pendingCount += 1
-    const task = applying.then(async () => {
+    const task = applying.then(() => applyScope.runInAsyncScope(async () => {
       const server = serverOf()
-      if (server === undefined) return
       const desiredHost: LanAccessHost = enabled ? '0.0.0.0' : '127.0.0.1'
+      // Advance the service snapshot first: a later recompose of the webserver
+      // row (from `lanAccess.host`) must see the value we converge to.
+      currentEnabled = enabled
+      if (server === undefined) return
       if (server.host === desiredHost) return
       const entry = webserverEntry()
       if (entry === undefined) {
         throw new Error('webserver loader entry not found')
       }
-      // Restate the webserver row config (host + the current port) to force
-      // the fiber restart: the loader rebinds the socket and reloads every
-      // dependent row (web-runtime re-samples LAN trust, the connection row
-      // re-reads it into the /api fence). The row's composed `host`
-      // expression (this plugin's bundle patch) is what any later
-      // recomposition re-applies, and it reads the live `lanAccess` service
-      // — so a post-boot user-patch re-apply converges to the SAME persisted
-      // host instead of reverting to the bundle default.
-      await loader.update(entry.id, { config: { host: desiredHost, port: server.port } })
-    })
+      // Restart the webserver fiber with the new host + the current port. Use
+      // the fiber's own `update(config, true)` (the loader's no-save restart
+      // path) rather than `loader.update`: the latter persists the composed
+      // tree back to cordis.yml, whose Include watcher then hot-reloads the
+      // whole subtree and restarts the webserver inside an HMR transaction —
+      // tainting it so every later settings write nests. The restart still
+      // cascades to dependent rows (web-runtime re-samples LAN trust, the
+      // connection row re-reads it into the /api fence), and the bundle
+      // patch's `host` expression reads the live `lanAccess` service, so a
+      // later recomposition converges to the same host.
+      const fiber = entry.fiber
+      if (fiber?.update === undefined) {
+        throw new Error('webserver fiber does not support config updates')
+      }
+      fiber.update({ host: desiredHost, port: server.port }, true)
+    }))
     applying = task.catch(() => {})
     void task.finally(() => { pendingCount -= 1 }).catch(() => {})
     return task
@@ -686,17 +743,17 @@ export function apply(ctx: Context): void {
 
   /** Converge the webserver bind to the persisted setting once both sides exist. */
   const align = (): void => {
-    if (scope === undefined || serverOf() === undefined) return
-    void enqueueApply(scope.get().enabled).catch(error => warn('align', error))
+    if (serverOf() === undefined) return
+    void enqueueApply(currentEnabled).catch(error => warn('align', error))
   }
 
   const stateOf = async (): Promise<LanAccessState> => {
     const server = serverOf()
-    const enabled = scope?.get().enabled ?? false
+    const enabled = currentEnabled
     const addresses = enabled ? lanAddresses() : []
     const primary = enabled ? await primaryLanAddress() : undefined
     return {
-      ready: scope !== undefined && server !== undefined,
+      ready: server !== undefined,
       enabled,
       host: server?.host ?? null,
       port: server?.port ?? null,
@@ -707,17 +764,6 @@ export function apply(ctx: Context): void {
         : null,
     }
   }
-
-  // The durable section: register the namespace, follow every commit, and
-  // align at boot. This child fiber depends on the settings seam only, so a
-  // webserver restart never tears it down.
-  ctx.inject(['settings'], (sctx) => {
-    scope = sctx.settings.register<typeof LAN_ACCESS_NAMESPACE, LanAccessSettings>(LAN_ACCESS_NAMESPACE, LanAccessSchema)
-    scope.watch((next) => {
-      void enqueueApply(next.enabled).catch(error => warn('settings change', error))
-    })
-    align()
-  })
 
   // The fenced route + boot alignment. This child fiber reloads after a
   // rebind (the webserver service disappears and returns), re-registering
@@ -806,13 +852,12 @@ export function apply(ctx: Context): void {
         throw new LanAccessHttpError('bad-request', 'expected {"enabled": boolean}')
       }
       const enabled = (payload as { enabled: boolean }).enabled
-      const settings = ctx.get('settings')
-      if (settings === undefined || scope === undefined) {
-        throw new LanAccessHttpError('not-ready', 'LAN access settings are not ready yet', 503)
-      }
-      // Persist first (the commit fires the watch → enqueueApply), then make
-      // sure the bind follows even if the watch raced this request.
-      await settings.update(LAN_ACCESS_NAMESPACE, { enabled })
+      // Persist in the plugin's own state file. Routing this through the
+      // harness `settings` plane would run a profile-config reload inside an
+      // HMR transaction; restarting the webserver from that context taints the
+      // new server and makes every later settings write fail as a nested
+      // transaction. The plugin-owned file keeps the toggle self-contained.
+      persistEnabled(ctx, enabled)
       await enqueueApply(enabled)
       writeJson(res, 200, { ok: true, value: await stateOf() })
       return

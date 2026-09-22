@@ -4,7 +4,7 @@
  * separator; the section column strips the trailing one).
  *
  * The row talks to the fenced /lan-access host route directly. Flipping the
- * switch persists the namespace and restarts the web server to rebind, so
+ * switch persists the plugin-owned flag and restarts the web server to rebind, so
  * the in-flight request (and any follow-up read) can drop mid-restart: after
  * a write the row polls the route until the server answers again, then
  * reflects the fresh state. Disabling from a remote machine intentionally

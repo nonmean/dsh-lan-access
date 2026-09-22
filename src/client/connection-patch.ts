@@ -2,10 +2,10 @@
  * Runtime connection patch: makes the DSH client treat a LAN-served page like
  * the local page. Applied from the plugin's apply, which injects 'connection',
  * so the `isLoopback` widening is in place BEFORE ui-settings reads
- * `remote.$host.isLoopback` for the settingsScope persistence decision.
+ * `remote.$host.isLoopback` for the settings persistence decision.
  *
- * Why this matters: on a non-loopback origin the client settingsScope would
- * otherwise resolve to `persistence: 'memory'`, which makes every settings
+ * Why this matters: on a non-loopback origin the settings persistence would
+ * otherwise resolve to `'memory'`, which makes every settings
  * surface (Models provider directory, Plugins config cards, Language and
  * Appearance rows) render nothing — the pre-patch behavior this plugin is here
  * to override.
@@ -48,7 +48,7 @@ function isServedLanHostname(hostname: string): boolean {
 
 /**
  * Widen `connection.isLoopback` to "loopback OR served LAN authority", so
- * settingsScope-bound surfaces use host persistence on LAN pages.
+ * settings-bound surfaces use host persistence on LAN pages.
  * @param connection - the ctx.connection handle (patched in place).
  * @returns the disposer restoring every patched member (HMR-safe).
  */

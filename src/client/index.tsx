@@ -3,16 +3,15 @@
  *
  * 1. A runtime connection patch that makes LAN-served pages behave like the
  *    local page WITHOUT any harness change: `connection.isLoopback` is
- *    widened to "loopback OR served LAN authority" (so settingsScope-bound
- *    surfaces use host persistence on LAN), and the loopback-pinned
- *    `api.settings.*` / `api.credentials.*` calls are routed through this
- *    plugin's fenced /lan-access/rpc proxy. The plugin injects only
- *    `connection`, which is available in the first boot wave — before any
- *    settings surface binds — so the patch is in place deterministically.
+ *    widened to "loopback OR served LAN authority", so the client settings
+ *    persistence decision (`remote.$host.isLoopback`) resolves to host mode
+ *    on a LAN page. The plugin injects only `connection`, which is available
+ *    in the first boot wave — before any settings surface binds — so the
+ *    patch is in place deterministically.
  *
  * 2. The LAN-access toggle row in the Settings shell's General section
  *    (`settings.general.item`), which reads and writes the fenced
- *    /lan-access host route; the host owns the settings namespace and the
+ *    /lan-access host route; the host owns the persisted flag and the
  *    webserver rebind.
  */
 import type { Context } from '@deepseek-ai/cordis'
@@ -53,11 +52,11 @@ installRandomUUIDPolyfill()
 /**
  * Services required before mounting: only the connection, so this plugin's
  * apply runs after the connection row provides its handle but still before
- * the settings surfaces (which wait on `remote` / `settingsScope`). That
- * ordering is what lets the isLoopback widening below land before ui-settings
- * reads `remote.$host.isLoopback` for the settingsScope persistence decision
- * — a non-loopback page would otherwise degrade settings to memory mode, and
- * the Models page / Plugins cards would render nothing.
+ * the settings surfaces (which wait on `remote`). That ordering is what lets
+ * the isLoopback widening below land before ui-settings reads
+ * `remote.$host.isLoopback` for the persistence decision — a non-loopback
+ * page would otherwise degrade settings to memory mode, and the Models page /
+ * Plugins cards would render nothing.
  */
 export const inject: string[] = ['connection']
 
@@ -134,27 +133,6 @@ export function apply(ctx: Context): void {
     report()
     setTimeout(report, 1500)
 
-    // Scope probe: bind the same 'shell' namespace the Plugins page's Shell
-    // card uses and report the resulting scope status — 'ready' means the
-    // host-mode + proxy path works end to end in this browser; 'loading' or
-    // 'unavailable' pinpoints where it does not.
-    const settingsScope = ctx.get('settingsScope') as {
-      bind<T>(spec: { namespace: string }): {
-        getSnapshot(): { status: string; value?: T }
-      }
-    } | undefined
-    let probe: { getSnapshot(): { status: string } } | undefined
-    if (settingsScope !== undefined) {
-      probe = settingsScope.bind<Record<string, unknown>>({ namespace: 'shell' })
-      setTimeout(() => {
-        void fetch('/lan-access/diag', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ scopeProbe: probe?.getSnapshot() }),
-        }).catch(() => {})
-      }, 2500)
-    }
-
     // Render-path poll (debug aid): every 2s, report what the OUTLET would
     // see for the plugin-item slot — raw entries, shadowing winners, the
     // declared spec, and each card's own injected snapshot (the card renders
@@ -192,7 +170,6 @@ export function apply(ctx: Context): void {
             cards: cardEntries,
             isLoopback: connection?.isLoopback === true,
             patched: (connection as { __lanAccessPatched?: boolean } | undefined)?.__lanAccessPatched === true,
-            probe: probe?.getSnapshot?.() ?? null,
           },
         }),
       }).catch(() => {})

@@ -6,7 +6,7 @@
 
 /** Wire state of the LAN-access feature. */
 export interface LanAccessState {
-  /** Whether the settings seam and webserver are both up (false while booting). */
+  /** Whether the webserver is up (false while booting). */
   ready: boolean
   /** The persisted enabled flag. */
   enabled: boolean

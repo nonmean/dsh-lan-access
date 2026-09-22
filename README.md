@@ -4,7 +4,7 @@ A DeepSeek Harness web plugin that adds a **LAN access** toggle to the DSH
 Settings shell (Settings → General). It replaces the manual `cordis.patch.yml`
 webserver override:
 
-> **Tested with [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) `v0.1.6-alpha.2`** — this plugin is verified runnable against that harness version.
+> **Tested with [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) `v0.1.7-alpha.2`** — this plugin is verified runnable against that harness version.
 
 - **On** — the web GUI binds `0.0.0.0`, so other machines on the same network
   can open it at `http://<LAN-IP>:3080/?token=…`. `dsh web` prints the full
@@ -30,7 +30,7 @@ devices can open:
 
 | Half | File | Role |
 | --- | --- | --- |
-| Host | `src/index.ts` | Registers the persisted `lan-access` settings namespace, the fenced `/lan-access` JSON route (GET state / POST set), the bind controller, and the `lanAccess` bind-host service. The webserver row's composed `host` expression reads that service, so every webserver (re)start — boot, toggle, or a post-boot user-patch re-apply — converges to the persisted setting; the controller only restarts the row when the bind actually differs. |
+| Host | `src/index.ts` | Owns a plugin-local persisted flag (`$DSH_HOME/lan-access.json`), the fenced `/lan-access` JSON route (GET state / POST set), the bind controller, and the `lanAccess` bind-host service. The webserver row's composed `host` expression reads that service, so every webserver (re)start — boot, toggle, or a post-boot user-patch re-apply — converges to the persisted setting. A toggle restarts the webserver fiber only when the bind differs, using `fiber.update(config, noSave)`: the no-save path keeps the composed tree out of `cordis.yml`, which would otherwise trigger an HMR subtree reload. |
 | Client | `src/client/` | Registers the General-settings row (`settings.general.item`, order 15) with a native checkbox switch, the LAN URLs (primary first, all live NIC addresses shown, copy button), zh/en copy, and restart-tolerant polling. |
 
 The route fence accepts loopback or the deployment's trusted authorities, read
@@ -43,11 +43,11 @@ The built artifacts (`lib/`) are committed, so installation needs no build
 step and no modification of the DeepSeek Harness checkout:
 
 ```sh
-# From GitHub (replace <owner>/<repo>)
-dsh plugin --profile web add git+https://github.com/<owner>/<repo>.git
+# From GitHub
+dsh plugin --profile web add git+https://github.com/nonmean/dsh-lan-access.git
 
 # ...or clone and install the local checkout (link: keeps your rebuilds live)
-git clone https://github.com/<owner>/<repo>.git
+git clone https://github.com/nonmean/dsh-lan-access.git
 dsh plugin --profile web add link:/path/to/dsh-lan-access
 
 # Restart the GUI
@@ -89,12 +89,26 @@ fence all ship inside the plugin.
      LAN origins (that Web API only exists in secure contexts, and the DSH
      API client mints every RPC id with it — without the polyfill a remote
      browser fails with "crypto.randomUUID is not a function").
-3. The choice is persisted in `~/.dsh/settings.yaml`:
+3. The choice is persisted by the plugin in `$DSH_HOME/lan-access.json`
+   (`~/.dsh/lan-access.json` by default):
 
-   ```yaml
-   lan-access:
-     enabled: true
+   ```json
+   {
+     "enabled": true
+   }
    ```
+
+## Upgrading from 0.1.x
+
+A full upgrade needs both halves (host + client) and a `dsh web` restart. The
+host half now owns its persistence, so the harness settings namespace is no
+longer used:
+
+- The toggle value moved to `$DSH_HOME/lan-access.json`. The old
+  `lan-access:` section in `~/.dsh/settings.yaml.imported` is not read; flip
+  the switch once after upgrading.
+- Reinstall (or rebuild `lib/`) so the host and client halves match; the
+  client bundle is cached until the next `dsh web`.
 
 ## Remote Settings pages and workspace — no harness change needed
 
@@ -107,24 +121,38 @@ modification of the DSH checkout**:
   browser-session auth authenticates it. The Models page provider directory,
   the Plugins configuration cards, and the Language/Appearance rows therefore
   work remotely with no extra hop.
-- **The client `settingsScope` degrades to memory mode on non-loopback
-  origins** (surfaces render empty). The browser bundle widens
+- **On non-loopback origins the client settings persistence degrades to
+  memory mode** (surfaces render empty). The browser bundle widens
   `connection.isLoopback` to "loopback OR served LAN authority" at runtime.
   The client entry injects `connection` and is marked
   `dsh.client.immediately`, so its bundle is prefetched and its `apply`
   runs right after the connection row provides the handle — before any
-  settings surface (which waits on `remote` / `settingsScope`) reads
+  settings surface (which waits on `remote`) reads
   `remote.$host.isLoopback`. That `inject`-ordered widening is what keeps
   the scope in host mode on a LAN page: without it, a surface that binds early
-  sees the unpatched `isLoopback` and its scope stays memory-mode — the
+  sees the unpatched `isLoopback` and its persistence stays memory-mode — the
   plugin configuration cards render nothing.
 - **`crypto.randomUUID` does not exist on plain-HTTP LAN origins.** The
   bundle installs a `getRandomValues`-based polyfill (same CSPRNG).
 
 ### Harness API changes this plugin tracks
 
-The harness evolved the settings/connection APIs between `0.1.0-rc.5` and
-`0.1.5-alpha.1`; the plugin was updated accordingly:
+The harness replaced its standalone, file-backed settings provider with
+profile-backed Config forms in `v0.1.7-alpha.1`:
+
+- `@deepseek-ai/dsh-settings` dropped `settings.register(ns, schema)` /
+  `SettingsScope` (and the `dsh-settings-file` package) in favour of
+  `SettingsForms`, which projects each plugin entry's volatile `Config`. A
+  settings write runs inside an HMR transaction (`configEditor.edit` →
+  `hmr.runExclusive`) that reconciles the whole profile. Because this plugin
+  must restart the web server to change the bind, routing the toggle through
+  that plane would restart the server inside the transaction and taint its
+  async context. The plugin therefore persists its own flag
+  (`$DSH_HOME/lan-access.json`) and restarts the web server fiber directly
+  (`fiber.update(config, true)`), staying off the harness settings plane.
+
+Earlier, the harness evolved the settings/connection APIs between
+`0.1.0-rc.5` and `0.1.5-alpha.1`; the plugin was updated accordingly:
 
 - `@deepseek-ai/dsh-settings` dropped the `settingsNamespace(ns)` helper —
   `settings.register` / `.update` / `.replace` / `.mutate` now take the raw
@@ -136,8 +164,8 @@ The harness evolved the settings/connection APIs between `0.1.0-rc.5` and
 - The `/api` gateway stopped pinning the configuration plane to loopback: it
   now trusts the served LAN authority, so the settings/credentials RPCs reach
   the host directly. The plugin therefore widens `connection.isLoopback` early
-  (via `inject: ['connection']` plus a synchronous patch) to keep
-  `settingsScope` in host mode on a LAN page; the fenced `/lan-access/rpc`
+  (via `inject: ['connection']` plus a synchronous patch) to keep the client
+  settings persistence in host mode on a LAN page; the fenced `/lan-access/rpc`
   proxy is no longer required for the remote Settings surfaces.
 
 Remaining loopback-only (hardcoded in the harness, not patchable from a
@@ -150,9 +178,8 @@ opens route into the sidebar editor.
 
 The host exposes `GET /lan-access/diag` (fenced like the other routes) with
 the latest browser boot reports: slot-registration counts, whether the
-connection patch is active, and a `settingsScope` probe bound to the
-`shell` namespace (status `ready` proves the host-mode settings read works
-end to end). During the first minute after boot the browser also posts a
+connection patch is active, and the plugin-item slot ledger. During the first
+minute after boot the browser also posts a
 2-second poll of the Plugins cards' own injected snapshots (`available`
 flags), the slot ledger view, and the declared spec — the exact data that
 separates "cards gone", "cards abdicated", and "cards present but rendering
