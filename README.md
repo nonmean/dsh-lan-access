@@ -4,7 +4,7 @@ A DeepSeek Harness web plugin that adds a **LAN access** toggle to the DSH
 Settings shell (Settings → General). It replaces the manual `cordis.patch.yml`
 webserver override:
 
-> **Tested with [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) `v0.1.7-rc.2`** — this plugin is verified runnable against that harness version.
+> **Tested with [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) `v0.2.1-alpha.1`** — this plugin is verified runnable against that harness version.
 
 - **On** — the web GUI binds `0.0.0.0`, so other machines on the same network
   can open it at `http://<LAN-IP>:3080/?token=…`. `dsh web` prints the full
@@ -100,6 +100,12 @@ fence all ship inside the plugin.
 
 ## Upgrading from 0.1.x
 
+Version 0.3.0 targets DeepSeek Harness `v0.2.1-alpha.1` (peers
+`^0.2.1-alpha.1`). The harness now gates each bundle by its declared DSH peer
+range, so this release is skipped on `0.1.x` harnesses — install the plugin
+version that matches the harness you run (0.2.0 was the `v0.1.7-rc.2` line).
+On `v0.2.1+`, upgrade in place:
+
 A full upgrade needs both halves (host + client) and a `dsh web` restart. The
 host half now owns its persistence, so the harness settings namespace is no
 longer used:
@@ -134,6 +140,21 @@ modification of the DSH checkout**:
   plugin configuration cards render nothing.
 - **`crypto.randomUUID` does not exist on plain-HTTP LAN origins.** The
   bundle installs a `getRandomValues`-based polyfill (same CSPRNG).
+
+### Harness compatibility (v0.2.1-alpha.1)
+
+`v0.2.1-alpha.1` added a plugin admission gate: before a profile imports a
+bundle, DSH checks that bundle's `peerDependencies` on `@deepseek-ai/dsh` and
+`@deepseek-ai/dsh-*` against the single runtime version and skips the bundle
+when any declared range does not match (prereleases participate in range
+matching). A plugin that declares only the previous harness line is therefore
+silently dropped at startup with a `skipping profile bundle` line. This
+release targets the current runtime line — every DSH peer is
+`^0.2.1-alpha.1` — so the bundle is admitted again. The host and client
+service contracts it consumes (`webServer`, `settings`, `credentials`,
+`loader`, `connection`, `slots`, `locale`, and the
+`settings.general.item` slot) are unchanged in this version, so this port is
+a peer-range/version bump, not a rewrite. Rebuild `lib/` after upgrading.
 
 ### Harness API changes this plugin tracks
 

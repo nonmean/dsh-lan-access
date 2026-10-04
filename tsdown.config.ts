@@ -18,11 +18,10 @@ import { defineConfig } from 'tsdown'
  *  require answered by the module table resolves them to shared instances. */
 const PLATFORM_MODULES = [
   'react', 'react/jsx-runtime', 'react-dom', 'react-dom/client', '@deepseek-ai/cordis',
+  '@deepseek-ai/dsh-client-store',
   '@deepseek-ai/dsh-client-ui-slots',
-  '@deepseek-ai/dsh-client-web-react',
   '@deepseek-ai/dsh-client-ui-primitives',
-  '@deepseek-ai/dsh-client-ui-attachment',
-  '@deepseek-ai/dsh-client-schema-form',
+  '@deepseek-ai/dsh-client-ui-dockkit',
 ]
 
 /** The client bundle's id (the graph row id == package name). */
@@ -41,7 +40,10 @@ export default defineConfig([
     fixedExtension: false,
     // Host-half runtime imports resolve from the profile's node_modules
     // (the DSH packages are peer deps); node: builtins stay automatic.
-    external: (id: string) => id.startsWith('@deepseek-ai/'),
+    // tsdown >=0.22 spells the former top-level `external` as deps.neverBundle.
+    deps: {
+      neverBundle: (id: string) => id.startsWith('@deepseek-ai/'),
+    },
   },
   {
     name: CLIENT_ID + '/client',
@@ -58,8 +60,11 @@ export default defineConfig([
       'import.meta.env': JSON.stringify({ MODE: process.env.NODE_ENV ?? 'production' }),
     },
     // Platform-table words stay external; everything else inlines.
-    external: (id: string) => PLATFORM_MODULES.includes(id),
-    noExternal: (id: string) => (PLATFORM_MODULES.includes(id) ? undefined : true),
+    // tsdown >=0.22 spells `external`/`noExternal` as deps.neverBundle/deps.alwaysBundle.
+    deps: {
+      neverBundle: (id: string) => PLATFORM_MODULES.includes(id),
+      alwaysBundle: (id: string) => !PLATFORM_MODULES.includes(id),
+    },
     outputOptions: {
       entryFileNames: 'client.js',
       banner: 'window.__ModuleLoader__.load({ id: ' + JSON.stringify(CLIENT_ID) + ', factory: (require) => {',

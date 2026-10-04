@@ -1,6 +1,6 @@
 {
   "name": "dsh-lan-access",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "DSH web plugin: a General-settings toggle that binds the web GUI to all interfaces (LAN access) or back to loopback",
   "type": "module",
   "license": "MIT",
@@ -42,14 +42,14 @@
     }
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.4",
-    "@deepseek-ai/dsh-client-connection": "^0.1.7-alpha.2",
-    "@deepseek-ai/dsh-client-locale": "^0.1.7-alpha.2",
-    "@deepseek-ai/dsh-client-ui-slots": "^0.1.7-alpha.2",
-    "@deepseek-ai/dsh-credentials": "^0.1.7-alpha.2",
-    "@deepseek-ai/dsh-host-webserver": "^0.1.7-alpha.2",
-    "@deepseek-ai/dsh-settings": "^0.1.7-alpha.2",
-    "@deepseek-ai/schemastery": "^3.18.4",
+    "@deepseek-ai/cordis": "^4.0.5-alpha.1",
+    "@deepseek-ai/dsh-client-connection": "^0.2.1-alpha.1",
+    "@deepseek-ai/dsh-client-locale": "^0.2.1-alpha.1",
+    "@deepseek-ai/dsh-client-ui-slots": "^0.2.1-alpha.1",
+    "@deepseek-ai/dsh-credentials": "^0.2.1-alpha.1",
+    "@deepseek-ai/dsh-host-webserver": "^0.2.1-alpha.1",
+    "@deepseek-ai/dsh-settings": "^0.2.1-alpha.1",
+    "@deepseek-ai/schemastery": "^3.18.5-alpha.1",
     "react": "^18.2.0"
   },
   "peerDependenciesMeta": {
